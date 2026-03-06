@@ -1,5 +1,6 @@
 from fints.client import FinTS3PinTanClient, TransactionResponse, NeedTANResponse, ResponseStatus, NeedRetryResponse
 from fints.exceptions import FinTSClientPINError, FinTSClientTemporaryAuthError
+from contextlib import contextmanager
 from decimal import Decimal
 import pytest
 
@@ -217,6 +218,67 @@ def test_tan_hhduc(fints_client):
 
         b = fints_client.send_tan(a, flicker.startcode.data)
         assert b.status == ResponseStatus.SUCCESS
+
+
+def test_send_tan_restores_touchdown_state_for_hkkaz(fints_client, monkeypatch):
+    class DummyCommandSegment:
+        TYPE = 'HKKAZ'
+        account = object()
+        date_start = None
+        date_end = None
+
+    class DummyDialog:
+        def send(self, *_args):
+            return object()
+
+    class DummyTanRequest:
+        challenge = "test"
+        challenge_hhduc = None
+
+    @contextmanager
+    def fake_dialog_context():
+        yield DummyDialog()
+
+    challenge = NeedTANResponse(
+        DummyCommandSegment(),
+        tan_request=DummyTanRequest(),
+        resume_method='_continue_fetch_with_touchdowns',
+        tan_request_structured=False,
+        decoupled=False,
+    )
+
+    for attr in (
+        '_touchdown_args',
+        '_touchdown_kwargs',
+        '_touchdown_responses',
+        '_touchdown_counter',
+        '_touchdown_dialog',
+        '_touchdown_response_processor',
+        '_touchdown_segment_factory',
+    ):
+        if hasattr(fints_client, attr):
+            delattr(fints_client, attr)
+
+    monkeypatch.setattr(fints_client, '_get_dialog', lambda: fake_dialog_context())
+    monkeypatch.setattr(fints_client, '_get_tan_segment', lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        fints_client,
+        '_find_highest_supported_command',
+        lambda *_args, **_kwargs: (lambda **segment_kwargs: segment_kwargs),
+    )
+
+    def fake_resume(_command_seg, _response):
+        assert fints_client._touchdown_args == ['HIKAZ']
+        assert fints_client._touchdown_kwargs == {}
+        assert fints_client._touchdown_counter == 1
+        assert fints_client._touchdown_responses == []
+        assert fints_client._touchdown_dialog is not None
+        assert callable(fints_client._touchdown_response_processor)
+        assert callable(fints_client._touchdown_segment_factory)
+        return "restored"
+
+    monkeypatch.setattr(fints_client, '_continue_fetch_with_touchdowns', fake_resume)
+    assert fints_client.send_tan(challenge, '123456') == 'restored'
 
 
 def test_get_transactions(fints_client):

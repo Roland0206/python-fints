@@ -1563,8 +1563,47 @@ class FinTS3PinTanClient(FinTS3Client):
                             challenge.decoupled,
                         )
 
+            self._restore_touchdown_state_for_tan_resume(challenge, dialog)
             resume_func = getattr(self, challenge.resume_method)
             return resume_func(challenge.command_seg, response)
+
+    def _restore_touchdown_state_for_tan_resume(self, challenge: NeedTANResponse, dialog):
+        if challenge.resume_method != '_continue_fetch_with_touchdowns':
+            return
+
+        if challenge.command_seg.TYPE != 'HKKAZ':
+            return
+
+        required_attrs = (
+            '_touchdown_args',
+            '_touchdown_kwargs',
+            '_touchdown_responses',
+            '_touchdown_counter',
+            '_touchdown_dialog',
+            '_touchdown_response_processor',
+            '_touchdown_segment_factory',
+        )
+        if all(hasattr(self, attr) for attr in required_attrs):
+            return
+
+        self._touchdown_args = ['HIKAZ']
+        self._touchdown_kwargs = {}
+        self._touchdown_responses = []
+        self._touchdown_counter = 1
+        self._touchdown_dialog = dialog
+        self._touchdown_response_processor = lambda responses: mt940_to_array(''.join([
+            seg.statement_booked.decode('iso-8859-1') for seg in responses
+        ]))
+        hkkaz = self._find_highest_supported_command(HKKAZ5, HKKAZ6, HKKAZ7)
+        if hkkaz is None:
+            raise FinTSUnsupportedOperation("No supported HKKAZ version found for touchdown resume.")
+        self._touchdown_segment_factory = lambda touchdown: hkkaz(
+            account=challenge.command_seg.account,
+            all_accounts=False,
+            date_start=challenge.command_seg.date_start,
+            date_end=challenge.command_seg.date_end,
+            touchdown_point=touchdown,
+        )
 
     def _process_response(self, dialog, segment, response):
         if response.code == '3920' and not self.bank_identifier == ING_BANK_IDENTIFIER:
